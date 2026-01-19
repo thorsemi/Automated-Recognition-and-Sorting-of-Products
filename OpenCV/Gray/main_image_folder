@@ -1,0 +1,215 @@
+# main_image_gray_folder.py
+from pathlib import Path
+import cv2
+import numpy as np
+
+from detection import detect_leaflets, make_binary_mask
+from classification import classify_front_back
+
+# ==== PATHS & SETTINGS ====
+IMAGE_DIR = Path(r"C:\Users\emilt\Desktop\val")
+SHOW_WINDOW = True
+SHOW_MASK = False
+AREA_OVERLAP_THRESHOLD = 16000.0
+
+
+def process_image(img_path: Path):
+    """Kører din grå-model på ét billede og gemmer _processed.png."""
+    frame_bgr = cv2.imread(str(img_path))
+    if frame_bgr is None:
+        print(f"⚠️ Kunne ikke læse billede: {img_path}")
+        return None, None
+
+    # Gråskala + global binær maske
+    frame_gray, binary_mask = make_binary_mask(frame_bgr)
+
+    # Detektion på gråbilledet
+    (
+        boxes,
+        rects,
+        mask_det,
+        valid_contours,
+        overlap_contours,
+    ) = detect_leaflets(frame_gray)
+
+    single_areas = [cv2.contourArea(c) for c in valid_contours]
+    median_single_area = float(np.median(single_areas)) if single_areas else None
+
+    outlined = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2BGR)
+
+    # --- Enkelt-leaflets + front/back + areal / ekstra area-overlap ---
+    for idx, (box, rect, num_corners) in enumerate(boxes):
+        cnt = valid_contours[idx]
+        area = cv2.contourArea(cnt)
+
+        # Fallback: for stort areal -> overlap
+        if area > AREA_OVERLAP_THRESHOLD:
+            cv2.drawContours(outlined, [box], 0, (0, 0, 255), 3)
+
+            if median_single_area and median_single_area > 0:
+                ratio_n = area / median_single_area
+                line1 = f"OVERLAP x{ratio_n:.1f}"
+                if ratio_n > 2.3:
+                    line2 = "HEAVY (3+ overlap)"
+                else:
+                    line2 = "2_overlap"
+            else:
+                line1 = "OVERLAP"
+                line2 = ""
+
+            x, y, w, h = cv2.boundingRect(cnt)
+
+            cv2.putText(
+                outlined,
+                line1,
+                (x, max(15, y - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
+            if line2:
+                cv2.putText(
+                    outlined,
+                    line2,
+                    (x, max(30, y + 15)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 0, 255),
+                    2,
+                )
+
+            cv2.putText(
+                outlined,
+                f"A={area:.0f} [area>{int(AREA_OVERLAP_THRESHOLD)}]",
+                (x, y + h + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 255),
+                2,
+            )
+            continue
+
+        # Normal enkelt-seddel
+        cv2.drawContours(outlined, [box], 0, (0, 255, 0), 2)
+
+        label, ratio = classify_front_back(frame_gray, box)
+        cx, cy = rect[0]
+
+        text1 = f"{label} ({ratio:.2f})"
+        text2 = f"A={area:.0f}"
+
+        cv2.putText(
+            outlined,
+            text1,
+            (int(cx), int(cy) - 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2,
+        )
+        cv2.putText(
+            outlined,
+            text2,
+            (int(cx), int(cy) + 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+
+    # --- Overlap-kandidater fra detection ---
+    for cnt, num_corners, reason in overlap_contours:
+        rect = cv2.minAreaRect(cnt)
+        box2 = cv2.boxPoints(rect).astype(int)
+        cv2.drawContours(outlined, [box2], 0, (0, 0, 255), 3)
+
+        area = cv2.contourArea(cnt)
+
+        if median_single_area and median_single_area > 0:
+            ratio_n = area / median_single_area
+            line1 = f"OVERLAP x{ratio_n:.1f}"
+            if ratio_n > 2.3:
+                line2 = "HEAVY (3+ overlap)"
+            else:
+                line2 = "2_overlap"
+        else:
+            line1 = "OVERLAP"
+            line2 = ""
+
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        cv2.putText(
+            outlined,
+            line1,
+            (x, max(15, y - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 255),
+            2,
+        )
+        if line2:
+            cv2.putText(
+                outlined,
+                line2,
+                (x, max(30, y + 15)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
+
+        cv2.putText(
+            outlined,
+            f"A={area:.0f} [{reason}]",
+            (x, y + h + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 255),
+            2,
+        )
+
+    # Gem ved siden af input
+    out_img_path = img_path.with_name(img_path.stem + "_processed.png")
+    cv2.imwrite(str(out_img_path), outlined)
+    print(f"✅ Gemte output-billede til: {out_img_path}")
+
+    return outlined, binary_mask
+
+
+def main():
+    if not IMAGE_DIR.is_dir():
+        raise NotADirectoryError(f"Mappe findes ikke: {IMAGE_DIR}")
+
+    image_files = sorted(
+        [p for p in IMAGE_DIR.iterdir() if p.suffix.lower() in [".png", ".jpg", ".jpeg"]]
+    )
+    if not image_files:
+        print("Ingen billeder fundet i mappen!")
+        return
+
+    print(f"🔍 Finder {len(image_files)} billeder...")
+
+    for idx, img_path in enumerate(image_files):
+        print(f"\n➡️ {idx+1}/{len(image_files)} : {img_path.name}")
+
+        outlined, binary_mask = process_image(img_path)
+        if outlined is None:
+            continue
+
+        if SHOW_WINDOW:
+            cv2.imshow("Processed", outlined)
+            if SHOW_MASK:
+                cv2.imshow("Global binary mask", binary_mask)
+
+            print("[INFO] ENTER = næste billede, 'q' = afslut")
+            key = cv2.waitKey(0) & 0xFF
+            if key == ord("q"):
+                print("⛔ Afslutter.")
+                break
+
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

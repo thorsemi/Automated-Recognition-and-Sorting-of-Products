@@ -1,0 +1,79 @@
+# Leaflet Overlap Detection & Line Events
+
+This project contains a small OpenCV-based pipeline for detecting leaflets on a conveyor, classifying front/back, detecting overlaps, and optionally checking when objects cross virtual reference lines (line events).
+
+## Main scripts
+
+### `main_image.py`
+- Runs the **full pipeline on a single image**.
+- Steps:
+  1. Loads an image from `IMAGE_PATH`.
+  2. Detects leaflets and overlap candidates using `detect_leaflets` from `detection.py`. :contentReference[oaicite:0]{index=0}  
+  3. For each valid (single) leaflet:
+     - Computes contour area.
+     - Classifies it as **Front/Back** using `classify_front_back` from `classification.py`. :contentReference[oaicite:1]{index=1}  
+     - Computes how many times larger an overlap is compared to a single leaflet.
+  4. For both single leaflets and overlap blobs:
+     - Computes the centre point and feeds it to the integrated `LineDetector` class.
+     - Prints a **line event code** (`1`, `2`, `3`, `4`) when the centre is close to one of the reference lines.
+  5. Draws:
+     - Green boxes + front/back labels + areas for single leaflets.
+     - Red boxes + overlap labels (`2_overlap`, `HEAVY (3+ overlap)`, etc.) for overlaps.
+     - Two horizontal and two vertical reference lines.
+  6. Saves a processed image `<name>_processed.png` and optionally displays it in a window.
+
+Use this script to generate **static figures** for documentation and debugging of overlap + line logic.
+
+### `main_image_line.py`
+- Variant focused on **line detection / event debugging** on a single image.
+- Uses the same line geometry (top/bottom + two verticals) and prints event codes for objects hitting each line.
+- Suitable when you only want to validate the virtual sensor logic visually.
+
+### `main_video.py`
+- Runs the leaflet/line pipeline on a **video stream**.
+- Typical flow:
+  1. Reads frames from a video file or camera.
+  2. Applies detection / overlap logic similar to `main_image.py`.
+  3. Uses the same line geometry and prints event codes when centres cross lines.
+  4. Writes an annotated output video (e.g. for demo or report).
+
+Use this when you need to show **temporal behaviour** (how leaflets move and when they are counted).
+
+## Core logic modules
+
+### `detection.py`
+- Implements the **leaflet and overlap detection** using:
+  - Grayscale + thresholding + morphological closing.
+  - Contour filtering w.r.t. area, border-touching, aspect ratio and rectangularity.
+  - Corner-count and geometric rules to separate:
+    - Valid single leaflets.
+    - Overlap candidates with metadata (`reason`, `area`, `area_factor`, `overlap_label`). :contentReference[oaicite:2]{index=2}  
+- Returns:
+  - `boxes, rects, mask, valid_contours, overlap_contours`.
+
+### `classification.py`
+- Implements **front/back classification** for a single leaflet:
+  - Creates a mask for the rotated box.
+  - Converts the region to grayscale.
+  - Counts very bright pixels (white) and computes a `white_ratio`.
+  - If `white_ratio > threshold` → `Back`, else `Front`. :contentReference[oaicite:3]{index=3}  
+
+### `output.py`
+- Utility for **toggling video recording** from within a main loop.
+- Function `save_recording(recording, out, frame, save_path)`:
+  - When recording starts:
+    - Creates the output directory (if needed).
+    - Opens a `cv2.VideoWriter` with a timestamped filename.
+  - When recording stops:
+    - Releases the writer and prints a message. :contentReference[oaicite:4]{index=4}  
+
+This function is intended to be used in `main_video.py` to start/stop recording when a key is pressed.
+
+---
+
+In summary:
+
+- Use `main_image.py` for **single-frame analysis + line events**.
+- Use `main_image_line.py` for **pure line detection debugging**.
+- Use `main_video.py` + `output.py` for **video / live stream analysis and recordings**.
+- `detection.py` and `classification.py` contain the core **vision logic** (detection, overlap, front/back).

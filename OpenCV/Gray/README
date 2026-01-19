@@ -1,0 +1,79 @@
+# Leaflet Detection & Classification (GRAY)
+
+This project contains OpenCV-based tools for detecting leaflets on a conveyor, classifying front/back sides, detecting overlaps, and optionally checking when objects cross virtual reference lines.
+
+## Main scripts
+
+### `main_image.py`
+- Runs the full **leaflet pipeline on a single image**.
+- Steps:
+  1. Loads an image from `IMAGE_PATH`.
+  2. Detects leaflets using `detect_leaflets`.
+  3. Classifies each valid leaflet as **Front / Back** (`classify_front_back`).
+  4. Estimates overlap based on contour area and geometry rules.
+  5. (Integrated) `LineDetector` checks if each leaflet’s center hits one of the virtual lines and prints an event code (1–4).
+  6. Draws boxes, labels, areas, overlap info and reference lines, then saves `<name>_processed.png`.
+
+Use this when you want a **static example frame** for the report.
+
+### `main_image_line.py` / `main_image_with_lineDEC.py`
+- Variant of `main_image.py` focusing on **line detection / event debugging**.
+- Same idea as `main_image.py`, but typically used to verify that the line logic and event codes match the production setup.
+
+### `main_video.py`
+- Runs detection and/or line logic on a **video** instead of a single image.
+- Reads frames from a video file or camera, processes each frame and writes an annotated output video.
+- Can be used to visualise how leaflets move through the system over time.
+
+## Core logic
+
+### `detection.py`
+- Implements **leaflet detection**:
+  - Global thresholding + morphology to build a binary mask.
+  - Finds contours and filters them using area, aspect ratio, rectangularity and corner count.
+  - Splits detections into:
+    - `valid_contours` (single leaflets)
+    - `overlap_contours` (candidates for 2+ overlapping leaflets)
+- Main function:  
+  `detect_leaflets(frame) -> boxes, rects, mask_det, valid_contours, overlap_contours` :contentReference[oaicite:0]{index=0}  
+
+### `classification.py`
+- Implements **front/back classification** for a single leaflet:  
+  counts how many pixels inside the box are “white” and uses a threshold rule:
+  - Very white → `Back`
+  - Otherwise → `Front`
+- Main function:  
+  `classify_front_back(frame, box) -> (label, white_ratio)` :contentReference[oaicite:1]{index=1}  
+
+### `line_detector.py`  *(integrated into `main_image.py` in the latest version)*
+- Simple helper class for **virtual sensor lines**:
+  - Draws two horizontal and two vertical reference lines.
+  - `check_collision(cx, cy)` returns an event code:
+    - `3` top line, `2` bottom line, `1` right vertical, `4` left vertical.
+- Used from the main scripts to print when a leaflet crosses a line.
+
+## IO / camera utilities
+
+### `capture.py`
+- `CameraCapture` class for grabbing frames from a camera over **WebSocket**.
+- `get_frame()` returns a decoded OpenCV `frame` or `None` on error.
+- Used in live setups where the camera stream is provided by a server. :contentReference[oaicite:2]{index=2}  
+
+### `output.py`
+- Helper for **starting/stopping video recording**.
+- Function `save_recording(recording, out, frame, save_path)` toggles recording:
+  - Creates an `.avi` file with timestamped filename.
+  - Writes frames while recording is active.
+- Intended to be called from `main_video.py` when the user presses a key to start/stop recording. :contentReference[oaicite:3]{index=3}  
+
+### `utils.py`
+- General helper functions used across the project (logging, paths, small OpenCV utilities, etc.).
+- Kept to avoid duplication and keep the main scripts clean.
+
+---
+
+In short:
+
+- Use `main_image.py` for single-image experiments (good for report figures).
+- Use `main_video.py` + `capture.py`/`output.py` for video and live camera tests.
+- `detection.py` and `classification.py` contain the core logic for detection and front/back / overlap reasoning.

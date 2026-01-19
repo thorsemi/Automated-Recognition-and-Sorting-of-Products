@@ -1,0 +1,17 @@
+# MEDIUM – 896
+yolo train model=yolo11m.pt data=/work3/s241614/projects/yolo_dataset/data.yaml imgsz=896 batch=16 epochs=150 \
+  device=0 workers=6 cos_lr=True warmup_epochs=5 optimizer=AdamW lr0=0.0016 lrf=0.12 weight_decay=0.01 \
+  hsv_h=0.008 hsv_s=0.5 hsv_v=0.3 mosaic=0.8 close_mosaic=25 mixup=0.05 copy_paste=0.3 erasing=0.2 \
+  degrees=3 shear=1.0 translate=0.05 scale=0.5 fliplr=0.3 rect=False cache=disk deterministic=True seed=0 \
+  cls=1.2 box=7.5 dfl=1.5 kobj=1.0 patience=100 \
+  project=/work3/s241614/runs/train name=y11m_prod_tune_20251029_2131
+
+# POST-FT robot
+yolo train model=/work3/s241614/runs/train/y11m_prod_tune_20251029_2131/weights/best.pt \
+  data=/work3/s241614/projects/yolo_dataset/data.yaml imgsz=896 batch=16 epochs=30 \
+  cos_lr=True warmup_epochs=3 optimizer=AdamW lr0=0.0008 lrf=0.2 weight_decay=0.01 \
+  mosaic=0.5 mixup=0.0 copy_paste=0.3 erasing=0.15 degrees=2 shear=0.5 translate=0.04 scale=0.4 fliplr=0.2 \
+  freeze=10 deterministic=True seed=0 \
+  project=/work3/s241614/runs/train name=y11m_postFT_robotfocus
+
+

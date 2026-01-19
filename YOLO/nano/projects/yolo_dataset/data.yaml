@@ -1,0 +1,5 @@
+train: /work3/s241614/projects/yolo_dataset/images/train
+val: /work3/s241614/projects/yolo_dataset/images/val
+
+nc: 7
+names: ['back', 'front', 'robot', 'partial', '2_overlap', '3_overlap', 'heavy_overlap']

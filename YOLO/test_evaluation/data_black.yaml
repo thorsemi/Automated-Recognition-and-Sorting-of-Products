@@ -1,0 +1,3 @@
+test: C:\Users\emilt\Desktop\Test_videos_PJM\black\images
+nc: 7
+names: [front, back, 2_overlap, 3_overlap, heavy_overlap, empty, unknown]

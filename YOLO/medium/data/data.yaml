@@ -1,0 +1,6 @@
+# data.yaml
+train: C:\Users\emilt\Desktop\yolo_dataset\images\train
+val:   C:\Users\emilt\Desktop\yolo_dataset\images\val
+# (Ultralytics finder labels automatisk ved at erstatte 'images' -> 'labels')
+nc: 7
+names: [front, back, 2_overlap, 3_overlap, heavy_overlap, empty, unknown]  # behold dine egne

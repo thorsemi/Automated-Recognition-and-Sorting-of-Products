@@ -1,0 +1,573 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+import matplotlib.pyplot as plt
+from ultralytics import YOLO
+
+
+# ================== KONFIGURATION ================== #
+
+# Stier til dine best.pt
+MODELS: Dict[str, str] = {
+    "Nano": r"C:\Users\emilt\Desktop\YOLO\nano\yolo_nano_min_20251029_1813"
+            r"\runs\train\y12n_prod_tune\weights\best.pt",
+    "Small": r"C:\Users\emilt\Desktop\YOLO\small\y11s_prod_bundle"
+             r"\y11s_prod_bundle\best.pt",
+    "Medium": r"C:\Users\emilt\Desktop\YOLO\medium\weights\y11m_prod_tune_best.pt",
+}
+
+# Valideringsbilleder og -labels (YOLO txt)
+IMAGES_DIR = Path(r"C:\Users\emilt\Desktop\images")
+LABELS_DIR = Path(r"C:\Users\emilt\Desktop\labels")
+
+IOU_THRESHOLD = 0.5
+CONF_THRESHOLDS = np.linspace(0.1, 0.9, 9)
+OPERATING_CONF = 0.4  # bruges til confusion matrix for Small
+
+# Blå farver til de tre modeller
+COLOR_MAP = {
+    "Nano": "#1f77b4",    # mørk blå
+    "Small": "#4c72b0",   # mellem blå
+    "Medium": "#6baed6",  # lys blå
+}
+
+
+# ================== HJÆLPEFUNKTIONER ================== #
+
+
+def yolo_to_xyxy(
+    x_center: float,
+    y_center: float,
+    width: float,
+    height: float,
+    img_w: int,
+    img_h: int,
+) -> Tuple[float, float, float, float]:
+    """Konverterer YOLO (relativt) til absolut (x1, y1, x2, y2)."""
+    w_abs = width * img_w
+    h_abs = height * img_h
+    x_abs = x_center * img_w
+    y_abs = y_center * img_h
+
+    x1 = x_abs - w_abs / 2.0
+    y1 = y_abs - h_abs / 2.0
+    x2 = x_abs + w_abs / 2.0
+    y2 = y_abs + h_abs / 2.0
+
+    return x1, y1, x2, y2
+
+
+def load_ground_truths(
+    images_dir: Path,
+    labels_dir: Path,
+) -> Dict[str, np.ndarray]:
+    """
+    Loader ground-truth bokse i YOLO-format og konverterer til:
+    [cls, x1, y1, x2, y2] pr. boks.
+    Returnerer dict: {image_stem: array(N, 5)}.
+    """
+    gt_by_image: Dict[str, List[List[float]]] = {}
+
+    image_paths = sorted(
+        list(images_dir.glob("*.png"))
+        + list(images_dir.glob("*.jpg"))
+        + list(images_dir.glob("*.jpeg"))
+    )
+
+    for img_path in image_paths:
+        stem = img_path.stem
+        label_path = labels_dir / f"{stem}.txt"
+        if not label_path.exists():
+            continue
+
+        img = plt.imread(img_path)
+        if img.ndim == 3:
+            img_h, img_w, _ = img.shape
+        else:
+            img_h, img_w = img.shape
+
+        boxes: List[List[float]] = []
+        with label_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) != 5:
+                    continue
+                cls_id = int(float(parts[0]))
+                x_c = float(parts[1])
+                y_c = float(parts[2])
+                w = float(parts[3])
+                h = float(parts[4])
+
+                x1, y1, x2, y2 = yolo_to_xyxy(x_c, y_c, w, h, img_w, img_h)
+                boxes.append([cls_id, x1, y1, x2, y2])
+
+        if boxes:
+            gt_by_image[stem] = np.array(boxes, dtype=float)
+
+    return gt_by_image
+
+
+def compute_iou_matrix(
+    boxes_pred: np.ndarray,
+    boxes_gt: np.ndarray,
+) -> np.ndarray:
+    """IoU mellem alle pred- og gt-bokse."""
+    if boxes_pred.size == 0 or boxes_gt.size == 0:
+        return np.zeros((boxes_pred.shape[0], boxes_gt.shape[0]))
+
+    x1_pred = boxes_pred[:, 0][:, None]
+    y1_pred = boxes_pred[:, 1][:, None]
+    x2_pred = boxes_pred[:, 2][:, None]
+    y2_pred = boxes_pred[:, 3][:, None]
+
+    x1_gt = boxes_gt[:, 0][None, :]
+    y1_gt = boxes_gt[:, 1][None, :]
+    x2_gt = boxes_gt[:, 2][None, :]
+    y2_gt = boxes_gt[:, 3][None, :]
+
+    inter_x1 = np.maximum(x1_pred, x1_gt)
+    inter_y1 = np.maximum(y1_pred, y1_gt)
+    inter_x2 = np.minimum(x2_pred, x2_gt)
+    inter_y2 = np.minimum(y2_pred, y2_gt)
+
+    inter_w = np.clip(inter_x2 - inter_x1, a_min=0.0, a_max=None)
+    inter_h = np.clip(inter_y2 - inter_y1, a_min=0.0, a_max=None)
+    inter_area = inter_w * inter_h
+
+    area_pred = (x2_pred - x1_pred) * (y2_pred - y1_pred)
+    area_gt = (x2_gt - x1_gt) * (y2_gt - y1_gt)
+
+    union_area = area_pred + area_gt - inter_area + 1e-8
+    iou = inter_area / union_area
+    return iou
+
+
+def match_detections(
+    gt_boxes: np.ndarray,
+    pred_boxes: np.ndarray,
+    iou_threshold: float,
+) -> int:
+    """Greedy matching: returnerer antal TP."""
+    if gt_boxes.size == 0 or pred_boxes.size == 0:
+        return 0
+
+    iou = compute_iou_matrix(pred_boxes, gt_boxes)
+    n_gt = gt_boxes.shape[0]
+    used_gt = np.zeros(n_gt, dtype=bool)
+    true_positives = 0
+
+    for i in range(iou.shape[0]):
+        j_best = int(np.argmax(iou[i]))
+        if iou[i, j_best] >= iou_threshold and not used_gt[j_best]:
+            used_gt[j_best] = True
+            true_positives += 1
+
+    return true_positives
+
+
+def run_inference_on_val(
+    model: YOLO,
+    images_dir: Path,
+    conf_base: float = 0.05,
+) -> Dict[str, np.ndarray]:
+    """
+    Kører modellen på alle val-billeder.
+    Returnerer dict: {image_stem: array(N, 6)}
+    med [cls, conf, x1, y1, x2, y2].
+    """
+    preds_by_image: Dict[str, np.ndarray] = {}
+
+    image_paths = sorted(
+        list(images_dir.glob("*.png"))
+        + list(images_dir.glob("*.jpg"))
+        + list(images_dir.glob("*.jpeg"))
+    )
+
+    for img_path in image_paths:
+        stem = img_path.stem
+        results = model(
+            source=str(img_path),
+            conf=conf_base,
+            iou=IOU_THRESHOLD,
+            verbose=False,
+        )[0]
+
+        if results.boxes is None or len(results.boxes) == 0:
+            preds_by_image[stem] = np.zeros((0, 6), dtype=float)
+            continue
+
+        cls = results.boxes.cls.cpu().numpy().astype(int)
+        conf = results.boxes.conf.cpu().numpy()
+        xyxy = results.boxes.xyxy.cpu().numpy()
+
+        data = np.concatenate(
+            [
+                cls[:, None].astype(float),
+                conf[:, None],
+                xyxy.astype(float),
+            ],
+            axis=1,
+        )
+        preds_by_image[stem] = data
+
+    return preds_by_image
+
+
+def evaluate_predictions(
+    preds_by_image: Dict[str, np.ndarray],
+    gt_by_image: Dict[str, np.ndarray],
+    num_classes: int,
+    conf_threshold: float,
+    iou_threshold: float,
+) -> Tuple[float, float, float]:
+    """Micro-averaged precision, recall og F1."""
+    tp_per_class = np.zeros(num_classes, dtype=float)
+    fp_per_class = np.zeros(num_classes, dtype=float)
+    fn_per_class = np.zeros(num_classes, dtype=float)
+
+    for stem, gt_boxes_full in gt_by_image.items():
+        preds_full = preds_by_image.get(stem, np.zeros((0, 6), dtype=float))
+
+        gt_cls = gt_boxes_full[:, 0].astype(int)
+        gt_xyxy = gt_boxes_full[:, 1:5]
+
+        if preds_full.size == 0:
+            for cls_id in gt_cls:
+                fn_per_class[cls_id] += 1
+            continue
+
+        mask_conf = preds_full[:, 1] >= conf_threshold
+        preds_conf = preds_full[mask_conf]
+
+        if preds_conf.size == 0:
+            for cls_id in gt_cls:
+                fn_per_class[cls_id] += 1
+            continue
+
+        for cls_id in range(num_classes):
+            gt_mask = gt_cls == cls_id
+            gt_boxes = gt_xyxy[gt_mask]
+
+            pred_mask = preds_conf[:, 0].astype(int) == cls_id
+            pred_boxes_all = preds_conf[pred_mask]
+
+            if gt_boxes.size == 0 and pred_boxes_all.size == 0:
+                continue
+
+            if gt_boxes.size == 0 and pred_boxes_all.size > 0:
+                fp_per_class[cls_id] += pred_boxes_all.shape[0]
+                continue
+
+            if gt_boxes.size > 0 and pred_boxes_all.size == 0:
+                fn_per_class[cls_id] += gt_boxes.shape[0]
+                continue
+
+            order = np.argsort(-pred_boxes_all[:, 1])
+            pred_boxes_sorted = pred_boxes_all[order][:, 2:6]
+
+            tp = match_detections(
+                gt_boxes=gt_boxes,
+                pred_boxes=pred_boxes_sorted,
+                iou_threshold=iou_threshold,
+            )
+
+            fp = pred_boxes_sorted.shape[0] - tp
+            fn = gt_boxes.shape[0] - tp
+
+            tp_per_class[cls_id] += tp
+            fp_per_class[cls_id] += fp
+            fn_per_class[cls_id] += fn
+
+    tp_total = tp_per_class.sum()
+    fp_total = fp_per_class.sum()
+    fn_total = fn_per_class.sum()
+
+    precision = tp_total / (tp_total + fp_total + 1e-8)
+    recall = tp_total / (tp_total + fn_total + 1e-8)
+    f1 = (2.0 * precision * recall) / (precision + recall + 1e-8)
+
+    return precision, recall, f1
+
+
+def build_confusion_matrix(
+    preds_by_image: Dict[str, np.ndarray],
+    gt_by_image: Dict[str, np.ndarray],
+    num_classes: int,
+    conf_threshold: float,
+    iou_threshold: float,
+) -> np.ndarray:
+    """
+    Confusion matrix (gt vs. pred) med ekstra kolonne for 'background'.
+    Matrix: (num_classes, num_classes + 1).
+    """
+    matrix = np.zeros((num_classes, num_classes + 1), dtype=int)
+
+    for stem, gt_boxes_full in gt_by_image.items():
+        preds_full = preds_by_image.get(stem, np.zeros((0, 6), dtype=float))
+
+        gt_cls = gt_boxes_full[:, 0].astype(int)
+        gt_xyxy = gt_boxes_full[:, 1:5]
+
+        mask_conf = preds_full[:, 1] >= conf_threshold
+        preds_conf = preds_full[mask_conf]
+
+        pred_cls = preds_conf[:, 0].astype(int) if preds_conf.size > 0 else np.array([])
+        pred_xyxy = preds_conf[:, 2:6] if preds_conf.size > 0 else np.zeros((0, 4))
+
+        used_pred = np.zeros(pred_xyxy.shape[0], dtype=bool)
+
+        for i, gt_box in enumerate(gt_xyxy):
+            cls_gt = gt_cls[i]
+
+            if pred_xyxy.size == 0:
+                matrix[cls_gt, -1] += 1
+                continue
+
+            ious = compute_iou_matrix(
+                boxes_pred=pred_xyxy,
+                boxes_gt=gt_box[None, :],
+            )[:, 0]
+
+            best_idx = int(np.argmax(ious))
+            best_iou = ious[best_idx]
+
+            if best_iou >= iou_threshold and not used_pred[best_idx]:
+                cls_pred = pred_cls[best_idx]
+                matrix[cls_gt, cls_pred] += 1
+                used_pred[best_idx] = True
+            else:
+                matrix[cls_gt, -1] += 1
+
+    return matrix
+
+
+# ================== PLOTS ================== #
+
+
+def plot_precision_vs_conf(
+    metrics_per_model: Dict[str, Dict[str, List[float]]],
+) -> None:
+    """Separate figur: Precision vs. confidence."""
+    plt.figure(figsize=(8, 5))
+    for model_name, metrics in metrics_per_model.items():
+        plt.plot(
+            metrics["conf"],
+            metrics["precision"],
+            linewidth=2,
+            label=model_name,
+            color=COLOR_MAP[model_name],
+        )
+
+    plt.xlabel("Confidence threshold")
+    plt.ylabel("Precision")
+    plt.ylim(0.0, 1.02)
+    plt.title("Precision vs. confidence")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_recall_vs_conf(
+    metrics_per_model: Dict[str, Dict[str, List[float]]],
+) -> None:
+    """Separate figur: Recall vs. confidence."""
+    plt.figure(figsize=(8, 5))
+    for model_name, metrics in metrics_per_model.items():
+        plt.plot(
+            metrics["conf"],
+            metrics["recall"],
+            linewidth=2,
+            label=model_name,
+            color=COLOR_MAP[model_name],
+        )
+
+    plt.xlabel("Confidence threshold")
+    plt.ylabel("Recall")
+    plt.ylim(0.0, 1.02)
+    plt.title("Recall vs. confidence")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_f1_vs_conf(
+    metrics_per_model: Dict[str, Dict[str, List[float]]],
+) -> None:
+    """Separate figur: F1-score vs. confidence."""
+    plt.figure(figsize=(8, 5))
+    for model_name, metrics in metrics_per_model.items():
+        plt.plot(
+            metrics["conf"],
+            metrics["f1"],
+            linewidth=2,
+            label=model_name,
+            color=COLOR_MAP[model_name],
+        )
+
+    plt.xlabel("Confidence threshold")
+    plt.ylabel("F1-score")
+    plt.ylim(0.85, 1.01)
+    plt.title("F1-score vs. confidence")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_roc_curves(
+    metrics_per_model: Dict[str, Dict[str, List[float]]],
+) -> None:
+    """
+    ROC-lignende kurver for hver model.
+    TPR ≈ recall, 'FPR' ≈ 1 - precision.
+    Én separat figur pr. model, samme blå tema.
+    """
+    for model_name, metrics in metrics_per_model.items():
+        tpr = np.array(metrics["recall"])
+        fpr = 1.0 - np.array(metrics["precision"])
+
+        plt.figure(figsize=(5, 5))
+        plt.plot(
+            fpr,
+            tpr,
+            linewidth=2,
+            color=COLOR_MAP[model_name],
+        )
+        plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1, color="#bbbbbb")
+
+        plt.xlabel("False positive rate")
+        plt.ylabel("True positive rate")
+        plt.xlim(0.0, 1.0)
+        plt.ylim(0.0, 1.0)
+        plt.title(f"ROC curve (approx.) – {model_name}")
+        plt.tight_layout()
+        plt.show()
+
+
+def plot_confusion_matrix_small(
+    matrix: np.ndarray,
+    class_names: List[str],
+) -> None:
+    """Confusion matrix for Small-modellen i blå/hvid stil."""
+    num_classes = len(class_names)
+    x_labels = class_names + ["background"]
+    y_labels = class_names
+
+    plt.figure(figsize=(8, 6))
+    im = plt.imshow(matrix, interpolation="nearest", cmap="Blues")
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+    cbar.ax.set_ylabel("Count")
+
+    plt.xticks(np.arange(num_classes + 1), x_labels, rotation=45, ha="right")
+    plt.yticks(np.arange(num_classes), y_labels)
+
+    for i in range(num_classes):
+        for j in range(num_classes + 1):
+            value = int(matrix[i, j])
+            if value == 0:
+                continue
+            plt.text(
+                j,
+                i,
+                str(value),
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+            )
+
+    plt.title("Confusion Matrix – Small", fontsize=14)
+    plt.xlabel("Predicted class", fontsize=12)
+    plt.ylabel("True class", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+
+# ================== MAIN ================== #
+
+
+def main() -> None:
+    print("=== YOLO metrics vs. confidence + ROC + Confusion (Small) ===")
+
+    # Ground truth
+    print("Indlæser ground truth...")
+    gt_by_image = load_ground_truths(IMAGES_DIR, LABELS_DIR)
+    if not gt_by_image:
+        raise RuntimeError(
+            "Ingen ground truth labels fundet. Tjek IMAGES_DIR og LABELS_DIR."
+        )
+
+    # Modeller
+    print("Indlæser modeller...")
+    models_loaded: Dict[str, YOLO] = {name: YOLO(path) for name, path in MODELS.items()}
+
+    any_model = next(iter(models_loaded.values()))
+    num_classes = len(any_model.names)
+    class_names = [any_model.names[i] for i in range(num_classes)]
+
+    # Inference + metrics
+    metrics_per_model: Dict[str, Dict[str, List[float]]] = {}
+    preds_small: Dict[str, np.ndarray] | None = None
+
+    for model_name, model in models_loaded.items():
+        print(f"Kører inference for {model_name}...")
+        preds_by_image = run_inference_on_val(
+            model=model,
+            images_dir=IMAGES_DIR,
+            conf_base=0.05,
+        )
+
+        if model_name == "Small":
+            preds_small = preds_by_image
+
+        precisions: List[float] = []
+        recalls: List[float] = []
+        f1s: List[float] = []
+
+        print(f"Evaluerer {model_name}...")
+        for conf in CONF_THRESHOLDS:
+            p, r, f1 = evaluate_predictions(
+                preds_by_image=preds_by_image,
+                gt_by_image=gt_by_image,
+                num_classes=num_classes,
+                conf_threshold=float(conf),
+                iou_threshold=IOU_THRESHOLD,
+            )
+            precisions.append(p)
+            recalls.append(r)
+            f1s.append(f1)
+
+        metrics_per_model[model_name] = {
+            "conf": list(CONF_THRESHOLDS),
+            "precision": precisions,
+            "recall": recalls,
+            "f1": f1s,
+        }
+
+    # Separate figurer for PRF
+    plot_precision_vs_conf(metrics_per_model)
+    plot_recall_vs_conf(metrics_per_model)
+    plot_f1_vs_conf(metrics_per_model)
+
+    # ROC-lignende kurver (én figur pr. model)
+    plot_roc_curves(metrics_per_model)
+
+    # Confusion matrix for Small ved OPERATING_CONF
+    if preds_small is not None:
+        print("Bygger confusion matrix for Small...")
+        cm_small = build_confusion_matrix(
+            preds_by_image=preds_small,
+            gt_by_image=gt_by_image,
+            num_classes=num_classes,
+            conf_threshold=OPERATING_CONF,
+            iou_threshold=IOU_THRESHOLD,
+        )
+        plot_confusion_matrix_small(cm_small, class_names)
+
+    print("=== Færdig ===")
+
+
+if __name__ == "__main__":
+    main()

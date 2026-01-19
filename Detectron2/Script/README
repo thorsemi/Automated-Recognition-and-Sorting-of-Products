@@ -1,0 +1,58 @@
+# Robot Overlap Analysis & Line Detection
+
+This repository contains a small toolchain for analysing robot motion and leaflet overlap patterns using a trained Detectron2 instance segmentation model. It supports:
+
+- **Offline analysis** of recorded robot videos to generate **cumulative overlap heatmaps**.
+- A reusable **Detectron2 wrapper** for inference and visualization.
+- A simple **line detector** for reference lines and hit detection.
+- A **WebSocket camera client** for real-time frame streaming from a remote camera (e.g. Jetson).
+
+---
+
+## Project structure
+
+- `main_robot_analyse.py`  
+  Offline script that:
+  - Runs Detectron2 on each frame of a video.
+  - Accumulates three separate heatmaps for:
+    - `2_overlap` (light overlap, class id 3)  
+    - `3_overlap` (medium overlap, class id 4)  
+    - `heavy_overlap` (heavy overlap, class id 5)
+  - Normalizes and colorizes each heatmap with different OpenCV colormaps.
+  - Overlays the combined heatmap on top of a static background image.
+  - Writes the result as a new video.
+
+- `detectron_model.py`  
+  Wrapper class `DetectronModel` that:
+  - Loads a Mask R-CNN model from Detectron2.
+  - Sets up a custom metadata object with 7 classes:  
+    `["back", "front", "robot", "2_overlap", "3_overlap", "heavy_overlap", "partiel"]`
+  - Provides a `predict()` method that returns:
+    - An annotated image with drawn instances.
+    - Optionally, the center points of all predicted bounding boxes.
+
+- `line_detector.py`  
+  Class `LineDetector` for:
+  - Drawing horizontal and vertical reference lines in the frame.
+  - Checking if a point `(cx, cy)` is close to any of the lines and returning a simple event code (1–4).
+
+- `camera_capture.py`  
+  Class `CameraCapture` for:
+  - Connecting to a camera server over WebSocket (`ws://192.168.1.120:8888/ws` by default).
+  - Receiving individual JPEG-encoded frames, decoding them with OpenCV, and returning them as `numpy` arrays.
+
+---
+
+## Requirements
+
+- Python 3.8+ (tested with CPython 3.x)
+- PyTorch (GPU or CPU)
+- Detectron2
+- OpenCV (`opencv-python`)
+- NumPy
+- `websocket-client` (for `camera_capture.py`)
+
+Install the Python dependencies (except Detectron2) via:
+
+```bash
+pip install opencv-python numpy websocket-client torch torchvision

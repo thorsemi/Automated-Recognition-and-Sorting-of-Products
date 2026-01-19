@@ -1,0 +1,30 @@
+# YOLO Line Detection Demo
+
+This project is a small demo for running a trained YOLO model on a single image and (optionally) checking whether detected objects cross predefined reference lines.
+
+## File overview
+
+### `main.py`
+- Entry point of the program.
+- Responsibilities:
+  1. Load the YOLO model via `YOLOModel`.
+  2. Load the input image from `IMAGE_PATH`.
+  3. Run YOLO inference and get:
+     - An annotated frame with detections.
+     - Center points `(cx, cy)` for each detected box.
+  4. Send the centers to `LineDetector.check_collision(...)` and print line-hit events.
+  5. Draw the lines on top of the result and show the final frame.
+
+**Switch between the three models**
+
+At the top of `main.py`, change `YOLO_PATH` to point to the desired model:
+
+```python
+# Nano
+# YOLO_PATH = r"...\nano\...\best.pt"
+
+# Small
+YOLO_PATH = r"...\small\...\best.pt"
+
+# Medium
+# YOLO_PATH = r"...\medium\...\best.pt"

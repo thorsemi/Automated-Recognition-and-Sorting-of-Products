@@ -1,0 +1,7 @@
+__pycache__/
+*.pth
+*.pt
+*.onnx
+*.mp4
+*.avi
+.env

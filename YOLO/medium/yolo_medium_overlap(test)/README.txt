@@ -1,0 +1,1 @@
+This training was an experiment designed to evaluate whether the system could learn to detect only overlap (e.g., classes 2–3 heavy) without distinguishing between front and back. If this approach had been successful, the plan was to introduce an additional OpenCV RGB-based method to classify front and back separately, as this method had already proven to be highly robust.

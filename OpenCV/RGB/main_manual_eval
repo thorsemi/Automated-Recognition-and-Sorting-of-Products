@@ -1,0 +1,127 @@
+# main_image_folder.py
+from pathlib import Path
+import cv2
+import numpy as np
+
+from detection import detect_leaflets, SINGLE_AREA_REF
+from classification import classify_front_back
+
+# ==== PATHS & SETTINGS ====
+IMAGE_DIR = Path(r"C:\Users\emilt\Desktop\Test_videos_PJM\fabriklys\image")   # <–– MAPPE
+OUT_DIR   = Path(r"C:\Users\emilt\Desktop\Test_videos_PJM\black\processed")
+
+SHOW_WINDOW = True
+AREA_OVERLAP_THRESHOLD = 16000.0
+
+
+def process_image(in_path: Path):
+    """Kører din eksisterende billede-logik på ét billede."""
+    img = cv2.imread(str(in_path))
+    if img is None:
+        print(f"⚠️ Kunne ikke åbne: {in_path}")
+        return None, None
+
+    out_dir = Path(OUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{in_path.stem}_processed.png"
+
+    boxes, rects, mask, contours, overlap_contours = detect_leaflets(img)
+    outlined = img.copy()
+
+    # base area
+    single_areas = [cv2.contourArea(c) for c in contours]
+    base_area = float(np.median(single_areas)) if single_areas else SINGLE_AREA_REF
+
+    # === Enkelt detektioner (front/back) ===
+    for idx, (box, rect, num_corners) in enumerate(boxes):
+        cnt  = contours[idx]
+        area = cv2.contourArea(cnt)
+
+        # fallback → overlap detection
+        if base_area > 0 and area > AREA_OVERLAP_THRESHOLD:
+            factor = area / base_area
+            cv2.drawContours(outlined, [box], 0, (0, 0, 255), 3)
+
+            x, y, w, h = cv2.boundingRect(cnt)
+
+            line1 = f"OVERLAP x{factor:.1f}"
+            line2 = "HEAVY (3+ overlap)" if factor > 2.3 else "2_overlap"
+
+            cv2.putText(outlined, line1, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.putText(outlined, line2, (x, y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            continue
+
+        # front/back normal
+        cv2.drawContours(outlined, [box], 0, (0, 255, 0), 2)
+        label, ratio = classify_front_back(img, box)
+        cx, cy = rect[0]
+
+        cv2.putText(outlined, f"{label} ({ratio:.2f})",
+                    (int(cx), int(cy) - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    (255, 0, 0), 2)
+
+        cv2.putText(outlined, f"A={area:.0f}",
+                    (int(cx), int(cy) + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 255, 0), 2)
+
+    # === Overlap fra geometric detection ===
+    for ov in overlap_contours:
+        cnt   = ov["cnt"]
+        area  = ov["area"]
+        rect  = cv2.minAreaRect(cnt)
+        box2  = cv2.boxPoints(rect).astype(int)
+
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        cv2.drawContours(outlined, [box2], 0, (0, 0, 255), 3)
+
+        factor = area / base_area if base_area > 0 else 0
+        line1 = f"OVERLAP x{factor:.1f}"
+        line2 = "HEAVY (3+ overlap)" if factor > 2.3 else "2_overlap"
+
+        cv2.putText(outlined, line1, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(outlined, line2, (x, y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(outlined, f"A={area:.0f}", (x, y + h + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    cv2.imwrite(str(out_path), outlined)
+    print(f"✅ Saved: {out_path}")
+
+    return img, outlined
+
+
+def main():
+    if not IMAGE_DIR.is_dir():
+        raise NotADirectoryError(f"Mappe findes ikke: {IMAGE_DIR}")
+
+    image_files = sorted([p for p in IMAGE_DIR.iterdir() if p.suffix.lower() in [".png", ".jpg", ".jpeg"]])
+    if not image_files:
+        print("Ingen billeder fundet i mappen!")
+        return
+
+    print(f"🔍 Finder {len(image_files)} billeder...")
+
+    for idx, img_path in enumerate(image_files):
+        print(f"\n➡️ {idx+1}/{len(image_files)} : {img_path.name}")
+
+        raw, processed = process_image(img_path)
+        if raw is None:
+            continue
+
+        if SHOW_WINDOW:
+            cv2.imshow("Processed Image", processed)
+
+            key = cv2.waitKey(0)
+            if key == ord("q"):
+                print("⛔ Afslutter.")
+                break
+            # ENTER = gå til næste
+            # alt andet = også næste
+
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
