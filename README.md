@@ -7,5 +7,5 @@
 This repository contains the appendix and experimental implementations for an industrial computer vision project carried out in collaboration with PJM (Poul Johansen Maskiner A/S).
 
 <div align="center">
-  <img src="images/setup.png" alt="PJM Project" width="500">
+  <img src="images/Setup.png" alt="PJM Project" width="500">
 </div>
