@@ -1,4 +1,6 @@
-<img src="images/PJM.jpg" alt="PJM Project" width="500">
+<div align="center">
+  <img src="images/PJM.jpg" alt="PJM Project" width="750">
+</div>
 
 # Automated Recognition and Sorting of Products
 
